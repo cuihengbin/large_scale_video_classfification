@@ -2,22 +2,42 @@
 Read and decode TFRecords files with tf.queue type operation.
 """
 
+tf.app.flags.DEFINE_integer('batch_size', 32,
+                            """Number of images to process in a batch.""")
 
-tf.app.flags.DEFINE_string('train_directory', '/tmp/UCF101/TFRecords/train/', 
-						'output TFRecords training data directory')
-tf.app.flags.DEFINE_string('valid_directory', '/tmp/UCF101/TFRecords/valid/', 
-						'output TFRecords validation data directory')
-tf.app.flags.DEFINE_integer('image_size', 200, 'size of cropped images')
+tf.app.flags.DEFINE_integer('image_size', 120, 'size of cropped squared images')
+
+tf.app.flags.DEFINE_float('central_fraction', '0.70', 
+						  """Fraction of central area to crop, the produced """
+						  """image retains its resolution.""")
+
+# Images are preprocessed asynchronously using multiple threads specified by
+# --num_preprocss_threads and the resulting processed images are stored in a
+# random shuffling queue. The shuffling queue dequeues --batch_size images
+# for processing on a given Inception tower. A larger shuffling queue guarantees
+# better mixing across examples within a batch and results in slightly higher
+# predictive performance in a trained model. Empirically,
+# --input_queue_memory_factor=16 works well. A value of 16 implies a queue size
+# of 1024*16 images. Assuming RGB 299x299 images, this implies a queue size of
+# 16GB. If the machine is memory limited, then decrease this factor to
+# decrease the CPU memory footprint, accordingly.
+tf.app.flags.DEFINE_integer('input_queue_memory_factor', 16,
+                            """Size of the queue of preprocessed images. """
+                            """Default is ideal but try smaller values, e.g. """
+                            """4, 2 or 1, if host memory is constrained. See """
+                            """comments in code for more details.""")
 
 FLAGS = tf.app.flags.FLAGS
 
+# UCF101 frames resolution
+IMAGE_HEIGHT = 240
+IMAGE_WIDTH = 320
 
-
-def _read_tfrecords(filename_queue):
+def _parse_example_proto(serialized_example):
 """Read TFRecords files from filename_queue
 
 Args:
-	filename_queue: tf.queue object, contains list of .TFRecords fileanmes
+	serialized_example: 
 
 Returns:
 	images_raw: 1D tensor, raw images data
@@ -27,8 +47,6 @@ Returns:
 	height,width: scalar tensor with dtype tf.int32
 	group,clip: scalar tensor with dtype tf.int32, unique identifier for videos
 """
-reader = tf.TFRecordReader()
-_, serialized_example = reader.read(filename_queue)
 
 features = tf.parse_single_example(
 serialized_example,
@@ -36,73 +54,157 @@ features={
 	'images': tf.FixedLenFeature([], tf.string, default_value=''),
 	'label': tf.FixedLenFeature([], tf.int64, default_value=-1),
 	'class': tf.FixedLenFeature([], tf.string, default_value=''),
-	'width': tf.FixedLenFeature([], tf.int64, default_value=-1),
-	'height': tf.FixedLenFeature([], tf.int64, default_value=-1),
 	'frame_counts': tf.FixedLenFeature([], tf.int64, default_value=-1),
 	'group': tf.FixedLenFeature([], tf.int64, default_value=-1),
 	'clip': tf.FixedLenFeature([], tf.int64, default_value=-1)
 	})
-images_raw = tf.decode_raw(features['images'], tf.uint8)
+images_uint8 = tf.decode_raw(features['images'], tf.uint8)
 label = tf.cast(features['label'], tf.int32)
 class_ = tf.cast(features['class'], tf.string)
 frame_counts = tf.cast(features['frame_counts'], tf.int32)
-height = tf.cast(features['height'], tf.int32)
-width = tf.cast(features['width'], tf.int32)
 group = tf.cast(features['group'], tf.int32)
 clip = tf.cast(features['clip'], tf.int32)
-return images_raw, label, class_, frame_counts, height, width, group, clip
-
-
-def _generate_image_and_label_batch():
-
-return images, labels
-
-
-def inputs(train, batch_size):
-"""Construct input for the network using the Reader op
-
-Args:
-	train: bool, true for training data, else validation data
-	batch_size: int, number of examples per batch
-Returns:
-	images: Images, 5D tensor of [batch_size, frame_counts, height, width, channel]
-	labels: Lables, 1D tensor of [batch_size] size.
-
-"""
-
-if train:
-	data_dir = FLAGS.train_directory
-else:
-	data_dir = FLAGS.valid_directory
-
-# Get filenames in the data_dir
-filenames = os.listdir(data_dir)
-assert len(filenames) < 10, 'Failed to find files.'
-
-# Put filenames into tf.queue op for read later
-filename_queue = tf.train.string_input(filenames)
-
-# Read examples from files in the filename queue.
-images_raw, label, class_, frame_counts, height, width, group, clip
- = _read_tfrecords(filename_queue)
-
-
-# Reshape images 
-width = width.value # turn into int, for reshape op to consume
-images_reshaped =
-
-# unpack videos
-images = tf.unpack()
-
-
-# crop images to a fix dimension 
-images_cropped = tf.cropp()
+return images_uint8, label
 
 
 
 
+def _distort_color(image, thread_id=0, scope=None):
+  """Distort the color of the image.
 
-return _generate_image_and_label_batch()
+  Each color distortion is non-commutative and thus ordering of the color ops
+  matters. Ideally we would randomly permute the ordering of the color ops.
+  Rather then adding that level of complication, we select a distinct ordering
+  of color ops for each preprocessing thread.
+
+  Args:
+    image: Tensor containing single image.
+    thread_id: preprocessing thread ID.
+    scope: Optional scope for op_scope.
+  Returns:
+    color-distorted image
+  """
+  with tf.op_scope([image], scope, 'distort_color'):
+    color_ordering = thread_id % 2
+
+    if color_ordering == 0:
+      image = tf.image.random_brightness(image, max_delta=32. / 255.)
+      image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
+      image = tf.image.random_hue(image, max_delta=0.2)
+      image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
+    elif color_ordering == 1:
+      image = tf.image.random_brightness(image, max_delta=32. / 255.)
+      image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
+      image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
+      image = tf.image.random_hue(image, max_delta=0.2)
+
+    # The random_* ops do not necessarily clamp.
+    #image = tf.clip_by_value(image, 0.0, 1.0)
+    return image
+
+
+def batch_inputs(dataset, batch_size, train, num_preporcess_threads=8):
+	"""
+	
+	Args:
+		dataset: instance od Dataset class specifying the dataset
+		batch_size: int
+		train: boolean
+		num_preprocess_threads: integer, total number of preprocessing threads
+
+	Returns:
+		context_images: 4-D float Tensor of a batch of low resolution images
+		fovea_images: 4-D float Tensor of a batch of central high resolution images
+		labels: 1-D integer Tensor of [batch_size]
+	"""
+	with tf.name_scope('batch_porcessing'):
+		filenames = dataset.filenames
+
+		# Create filename queue
+		if train:
+			filename_queue = tf.train.string_input_producer(fileanmes,
+															shuffle=True,
+															capacity=50)
+		else:
+			filename_queue = tf.train.string_input_producer(filenames,
+															shuffle=False,
+															capacity=1)
+		# Parse a serialized Example proto to extract the images and metadata.
+		reader = dataset.reader()
+		_, serialized_example = reader.read(filenamequeue)
+
+		fovea_images_and_labels = []
+		context_images_and_labels = []
+		for thread_id in range(FLAGS.num_preprocess_threads):
+			# each call dequeues one example from filenamequeue
+			# For multiple frames based sampling strategy, consider pull frame_counts 
+			# out, also add a tf.cond op for generization below.
+			images_uint8, label_index = _parse_example_proto(serialized_example)
+
+			# Reshape images
+			# Caution! This only works for frame_counts = 1
+			images_reshaped = tf.reshape(images_uint8, (IMAGE_HEIGHT, IMAGE_WIDTH, 3))
+
+			# Crop images into a square one with FLAG.image_size 
+			images_cropped = tf.image.resize_image_with_crop_or_pad(images_reshaped,
+															240, 240)
+															
+			# Distor cropped images for trainning examples
+			if train:
+				# Randomly flip the image horizontally.
+				distorted_image = tf.image.random_flip_left_right(distorted_image)
+
+				# Randomly distort the colors.
+				distorted_image = distort_color(distorted_image, thread_id)
+			else:
+				# Remain the same for evaluation
+				distorted_image = images_cropped
+
+			## Produce two streams of images, context_images and centered fovea_images
+			# Crop the central region of the image with an area containing FLAG.central_fraction
+			# of the original image. And then resize back to FLAG.image_size.
+
+			fovea_image = tf.image.resize_image_with_crop_or_pad(image, 
+																FLAG.image_size,
+																FLAG.image_size)
+
+			# Use max_pool op to downsample image to produce a context stream. 
+			# the resultant shape has to be identical to ones in fovea_image
+			# this is done by setting ksize=[2,2,1] and stride=[2,2,1]
+			# Formula for dimensions of pooled tensor is:
+			# W2=(W1−F)/S+1W2=(W1−F)/S+1
+			# H2=(H1−F)/S+1H2=(H1−F)/S+1
+			# D2=D1
+
+			context_image = max_pool() 
+
+			assert context_image.shape.value[0] == 120
+
+
+			# Whitening both streams, after whitenning, image type is converted 
+			# from tf.uint8 to tf.float32
+			fovea_image = tf.image.per_image_whitening(fovea_image)
+			context_image = tf.image.per_image_whitening(context_image)
+
+			fovea_images_and_labels.append([fovea_image, label_index])
+			context_images_and_labels.append([context_image, label_index])
+
+		# batching
+		fovea_batch, label_batch = tf.train.batch_join(
+			fovea_images_and_labels,
+			batch_size=FLAG.batch_size,
+			capacity=2 * num_preprocess_threads * FLAG.batch_size)
+		context_batch, label_batch = tf.train.batch_join(
+			context_images_and_labels,
+			batch_size=FLAG.batch_size,
+			capacity=2 * num_preprocess_threads * FLAG.batch_size)
+
+		# Display the training images in the visualizer.
+		tf.image_summary('fovea_images', fovea_batch)
+		tf.image_summary('context_images', context_batch)
+
+		return fovea_batch, context_batch, tf.reshape(label_batch, [FLAG.batch_size])
+
 
 
 if __name__=='__main__':
