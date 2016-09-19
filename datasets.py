@@ -3,6 +3,7 @@ dataset class
 """
 
 import tensorflow as tf
+import os
 
 tf.app.flags.DEFINE_string('train_directory', '/tmp/UCF101/TFRecords/train/', 
 						'output TFRecords training data directory')
@@ -22,8 +23,11 @@ class Dataset:
 
 	def _filenames(self):
 		if self.used_for == 'train':
-			return os.path.listdir(FLAGS.train_directory)
+			return [os.path.join(
+				FLAGS.train_directory, fn) for fn in os.listdir(FLAGS.train_directory)]
 		elif self.used_for == 'valid':
-			return os.path.listdir(FLAGS.valid_directory)
+			return [os.path.join(
+				FLAGS.valid_directory, fn) for fn in os.listdir(FLAGS.valid_directory)]
 		else:
-			return os.path.listdir(FLAGS.test_directory)
+			return [os.path.join(
+				FLAGS.test_directory, fn) for fn in os.listdir(FLAGS.test_directory)]
