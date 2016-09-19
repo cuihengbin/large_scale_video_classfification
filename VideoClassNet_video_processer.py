@@ -4,12 +4,10 @@ Read and decode TFRecords files with tf.queue type operation.
 
 tf.app.flags.DEFINE_integer('batch_size', 32,
                             """Number of images to process in a batch.""")
+tf.app.flags.DEFINE_integer('num_threads', 10,
+							"""Number of threads to run batching""")
 
-tf.app.flags.DEFINE_integer('image_size', 120, 'size of cropped squared images')
 
-tf.app.flags.DEFINE_float('central_fraction', '0.70', 
-						  """Fraction of central area to crop, the produced """
-						  """image retains its resolution.""")
 
 # Images are preprocessed asynchronously using multiple threads specified by
 # --num_preprocss_threads and the resulting processed images are stored in a
@@ -26,6 +24,11 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 16,
                             """Default is ideal but try smaller values, e.g. """
                             """4, 2 or 1, if host memory is constrained. See """
                             """comments in code for more details.""")
+tf.app.flags.DEFINE_integer('frame_counts', 1, 
+							"""Number of frames in a video."""
+							"""Depends on sampling strategy."""
+							"""Single-frame: 1"""
+							"""Others?""")
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -64,13 +67,14 @@ class_ = tf.cast(features['class'], tf.string)
 frame_counts = tf.cast(features['frame_counts'], tf.int32)
 group = tf.cast(features['group'], tf.int32)
 clip = tf.cast(features['clip'], tf.int32)
-return images_uint8, label
+images = tf.cast(images_uint8, tf.float32)
+return images, label
 
 
 
 
-def _distort_color(image, thread_id=0, scope=None):
-  """Distort the color of the image.
+def _distort_image(image, seed=seed, scope=None):
+  """Distort the color and oreitation of the image
 
   Each color distortion is non-commutative and thus ordering of the color ops
   matters. Ideally we would randomly permute the ordering of the color ops.
@@ -84,23 +88,55 @@ def _distort_color(image, thread_id=0, scope=None):
   Returns:
     color-distorted image
   """
-  with tf.op_scope([image], scope, 'distort_color'):
-    color_ordering = thread_id % 2
+	with tf.op_scope([image], scope, 'distort'):
+		# Random flip
+		image = tf.image.random_flip_left_right(
+			image, seed=seed)
 
-    if color_ordering == 0:
-      image = tf.image.random_brightness(image, max_delta=32. / 255.)
-      image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
-      image = tf.image.random_hue(image, max_delta=0.2)
-      image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
-    elif color_ordering == 1:
-      image = tf.image.random_brightness(image, max_delta=32. / 255.)
-      image = tf.image.random_contrast(image, lower=0.5, upper=1.5)
-      image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
-      image = tf.image.random_hue(image, max_delta=0.2)
+		# Distor color
+		image = tf.image.random_brightness(
+			image, max_delta=32. / 255., seed=seed)
+		image = tf.image.random_saturation(
+			image, lower=0.5, upper=1.5, seed=seed)
+		image = tf.image.random_hue(
+			image, max_delta=0.2, seed=seed)
+		image = tf.image.random_contrast(
+			image, lower=0.5, upper=1.5, seed=seed)
 
-    # The random_* ops do not necessarily clamp.
-    #image = tf.clip_by_value(image, 0.0, 1.0)
-    return image
+	return image
+
+def _gen_fovea_stream(image):
+	"""Produce a high resolution centered images
+
+	Args:
+		images: 3D tensor. with shape 
+			[160, 160, 3]
+
+	Returns:
+		images: 3D tensor, with shape 
+			[120, 120, 3]
+	"""
+	tf.assert_rank(images, 3)
+
+
+
+
+def _gen_context_stream(images):
+	"""Produce a low resolution images
+
+	Args:
+		images: 4D tensor. with shape 
+			[frame_count, 160, 160, 3]
+
+	Returns:
+		images: lenght 1 list with a value 4D tensor, which has shape 
+			[frame_count, 120, 120]
+	"""
+	tf.assert_rank(images, 4)
+	context_stream = tf.nn.max_pool(images, 
+		ksize=[1,2,2,1], strides=[1,2,2,1],padding='VALID'))
+	assert context_stream.get_shape()[1:] == (120, 120, 3)
+
 
 
 def batch_inputs(dataset, batch_size, train, num_preporcess_threads=8):
@@ -122,16 +158,92 @@ def batch_inputs(dataset, batch_size, train, num_preporcess_threads=8):
 
 		# Create filename queue
 		if train:
-			filename_queue = tf.train.string_input_producer(fileanmes,
+			filename_queue = tf.train.string_input_producer(filenames,
 															shuffle=True,
 															capacity=50)
 		else:
 			filename_queue = tf.train.string_input_producer(filenames,
 															shuffle=False,
 															capacity=1)
-		# Parse a serialized Example proto to extract the images and metadata.
+		# Parse a serialized Example proto from filename_queue.
 		reader = dataset.reader()
-		_, serialized_example = reader.read(filenamequeue)
+		_, serialized_example = reader.read(filename_queue)
+		images_str, label_index = _parse_example_proto(serialized_example)
+
+		# Reshape images to size (frame_counts, height, width, channel)
+		# Value of the first dimension depends on the sampling trategy
+		images_reshaped = tf.reshape(images_str, (
+			tf.FLAGS.frame_counts, IMAGE_HEIGHT, IMAGE_WIDTH, 3))
+
+		# Resize images to a square shape, with size equal to  IMAGE_HEIGHT
+		# i.e. 240
+		images_reshaped =  [
+			tf.image.resize_image_with_crop_or_pad(
+				images_reshaped[i], IMAGE_HEIGHT, IMAGE_HEIGHT)
+				for i in range(tf.FLAGS.frame_counts)]
+		images_reshaped = tf.pack(images_reshaped, axis=0)
+
+
+		if train:
+			# Retrive FLAGS.batch_size examples. Under the hood, its fires
+			# batch_size threads to run enqueue ops.
+			images_batch, label_batch = tf.train.shuffle_batch(
+				[images_reshaped, label_index], 
+				batch_size=FLAGS.batch_size,
+				num_threads=FLAGS.num_threads,
+				capacity=500,
+				min_after_dequeue=1000)
+		else: 
+			images_batch, label_batch = tf.train.batch(
+				[images_reshaped, label_index],
+				batch_size=1,
+				num_threads=FLAGS.num_threads)
+
+		# Apply same flip and color distrotion on images from the same
+		# clip.
+		images_in_batch_list = tf.unpack(images_batch, axis=0)
+		tf.assert_rank(images_in_batch_list[0], 4)
+
+		fovea_stream_list = []
+		context_stream_list = []
+		for seed, images in images_in_batch_list:
+			images_list = tf.unpack(images, axis=0)
+
+			assert len(iamges_list)==tf.FLAGS.frame_counts 
+			tf.assert_rank(images_list[0], 3)
+
+			images_list_distored = [
+				_distort_image(img, seed) for img in iamges_list]
+
+			if train:
+				# Generates fovea and context streams, seperately.
+				# Since fovea stream operates on 3D tensors. 
+				# And context sream operates on 4D tensors.
+				fovea_stream_list.append(
+					_gen_fovea_stream(img) for img in images_list_distored)
+				context_stream_list.append(
+					_gen_context_stream(tf.pack(images_list_distored, axis=0)))
+			else:
+				fovea_stream_list.append(
+					_gen_fovea_stream(img) for img in iamges_list)
+				context_stream_list.append(
+					_gen_context_stream(tf.pack(iamges_list, axis=0)))
+				break
+
+
+		# sutract a constant
+		image = tf.image.per_image_whitening(image)
+
+
+
+
+
+
+
+
+
+
+
 
 		fovea_images_and_labels = []
 		context_images_and_labels = []
@@ -139,30 +251,51 @@ def batch_inputs(dataset, batch_size, train, num_preporcess_threads=8):
 			# each call dequeues one example from filenamequeue
 			# For multiple frames based sampling strategy, consider pull frame_counts 
 			# out, also add a tf.cond op for generization below.
-			images_uint8, label_index = _parse_example_proto(serialized_example)
+			images, label_index = _parse_example_proto(serialized_example)
 
-			# Reshape images
-			# Caution! This only works for frame_counts = 1
-			images_reshaped = tf.reshape(images_uint8, (IMAGE_HEIGHT, IMAGE_WIDTH, 3))
+			# Reshape images to size (frame_counts, height, width, channel)
+			# Value of the first dimension depends on the sampling trategy
+			images_reshaped = tf.reshape(images, (
+				tf.FLAGS.frame_counts, IMAGE_HEIGHT, IMAGE_WIDTH, 3))
 
-			# Crop images into a square one with FLAG.image_size 
-			images_cropped = tf.image.resize_image_with_crop_or_pad(images_reshaped,
-															240, 240)
+			# Crop and distore(if train) images into a square one with
+			# FLAG.image_size Since tenserflow's image operations only work 
+			# with 3D tensor, so we need to operate each frames one by one 
+			images_cropped_list = [
+			tf.image.resize_image_with_crop_or_pad(images_reshaped[i])
+				for i in range(tf.FLAGS.frame_counts)]
+			
 															
 			# Distor cropped images for trainning examples
 			if train:
 				# Randomly flip the image horizontally.
-				distorted_image = tf.image.random_flip_left_right(distorted_image)
+				distorted_images = [
+				tf.image.random_flip_left_right(images_cropped_list[i] 
+					for i in images_cropped_list)
 
 				# Randomly distort the colors.
-				distorted_image = distort_color(distorted_image, thread_id)
+				distorted_images = [
+				distort_color(distorted_image[i], thread_id)
+					for i in distorted_images]
 			else:
-				# Remain the same for evaluation
-				distorted_image = images_cropped
+				# Remains for evaluation
+				distorted_images = images_cropped_list
 
-			## Produce two streams of images, context_images and centered fovea_images
-			# Crop the central region of the image with an area containing FLAG.central_fraction
-			# of the original image. And then resize back to FLAG.image_size.
+
+			# Produce two streams of images for each image in the list.
+			# After porcessing, images in both streams are resized to 
+			# [160, 160, 3], the dimensions is constrained by the max_pooling
+			# operation.
+
+			# Context stream: Low resolution images.
+			# since tf.max_pool only recieves 4D tensor. We need to pack the 
+			# list piror to maxpool 
+			packed_images = tf.pack(distorted_image, axis=0)
+			context_images = tf.nn.max_pool(packed_images, 
+				ksize=[1,2,2,1], strides=[1,2,2,1],padding='VALID'))
+			
+			# Fovea stream: High resolution center images.
+
 
 			fovea_image = tf.image.resize_image_with_crop_or_pad(image, 
 																FLAG.image_size,
