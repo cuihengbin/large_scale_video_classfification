@@ -1,5 +1,9 @@
 """
 Build the Network of VideoClassNet
+
+# Formula for dimensions of the output of a conv layer
+# W2=(W1−F+2P)/S+1. Where, F kernel size, P is padding
+# S is stride.
 """
 
 
@@ -69,11 +73,32 @@ def inference(fovea_batch, context_batch):
 		logits
 
 	"""
-	
+	# 
+
+
 	return logits
 
 
-def loss():
+def losses(fovea_batch, context_batch, label_batch):
+	"""Produce losses across all videos in a batch
+
+	"""
+
+	# Multi-threading, each thread return a loss from a video
+
+
+	logits_batch = []
+	for fovea_video, context_video in zip(fovea_batch, context_batch):
+		logit_video = []
+		for fovea_image, context_image in zip(fovea_video, context_video):
+			# Porcess two streams seperately
+			fovea_layer_before_fc = _singleframe_layer_before_fc(fovea_image)
+			context_layer_before_fc = _singleframe_layer_before_fc(context_image)
+		# Connect two streams to fc
+		
+
+
+
 	return loss
 
 

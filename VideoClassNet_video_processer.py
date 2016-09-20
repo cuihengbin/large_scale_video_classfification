@@ -1,5 +1,10 @@
 """
 Read and decode TFRecords files with tf.queue type operation.
+
+Differences from the paper:
+	Raw frames size
+	Color distortion.
+	Mean value subtracted.
 """
 
 import os
@@ -44,9 +49,13 @@ tf.app.flags.DEFINE_integer('frame_counts', 1,
 
 FLAGS = tf.app.flags.FLAGS
 
-# UCF101 frames resolution
+# UCF101 raw frame resolution
 IMAGE_HEIGHT = 240
 IMAGE_WIDTH = 320
+
+# Frames will first cropped to a size (178, 178)
+# Further resized to (89, 89) after gen fovea, context processes
+# Aside, 89 is constrained by max_pool operation with ksize=2, stride=2
 
 
 
@@ -133,7 +142,7 @@ def _gen_fovea_stream(image):
 	"""
 	tf.assert_rank(image, 3)
 	fovea_stream = tf.image.resize_image_with_crop_or_pad(
-		image, 120, 120)
+		image, 89, 89)
 	return fovea_stream
 
 
@@ -152,17 +161,17 @@ def _gen_context_stream(images):
 
 	Args:
 		images: 4D tensor. with shape 
-			[frame_count, 160, 160, 3]
+			[frame_count, 178, 178, 3]
 
 	Returns:
 		images: 4D tensor, which has shape 
-			[frame_count, 120, 120]
+			[frame_count, 89, 89]
 	"""
 
 	tf.assert_rank(images, 4)
 	context_stream = tf.nn.max_pool(images, 
 		ksize=[1,2,2,1], strides=[1,2,2,1],padding='VALID')
-	assert context_stream.get_shape()[1:] == (120, 120, 3)
+	assert context_stream.get_shape()[1:] == (89, 89, 3)
 	return context_stream
 
 
@@ -177,7 +186,7 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		num_preprocess_threads: integer, total number of preprocessing threads
 
 	Returns:
-		context_images: 4-D float Tensor of a batch of low resolution images
+		context_images: list of list of 3D tensors. 
 		fovea_images: 4-D float Tensor of a batch of central high resolution images
 		labels: 1-D integer Tensor of [batch_size]
 	"""
@@ -205,11 +214,11 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		images_reshaped = tf.reshape(images_str, (
 			FLAGS.frame_counts, IMAGE_HEIGHT, IMAGE_WIDTH, 3))
 
-		# Resize images to a square shape, with size equal to  IMAGE_HEIGHT
-		# i.e. 240
+		# Resize images to a square shape, with size equal to  178
+		# to be consistent with the paper
 		images_reshaped =  [
 			tf.image.resize_image_with_crop_or_pad(
-				images_reshaped[i], IMAGE_HEIGHT, IMAGE_HEIGHT)
+				images_reshaped[i], 178, 178)
 				for i in range(FLAGS.frame_counts)]
 		images_reshaped = tf.pack(images_reshaped, axis=0)
 
@@ -251,27 +260,31 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 				# Generates fovea and context streams, seperately.
 				# Since fovea stream operates on 3D tensors. 
 				# And context sream operates on 4D tensors.
-				fovea_stream_list.append(tf.pack(
-					[_gen_fovea_stream(img) for img in images_list_distored]))
+				fovea_stream_list.append(
+					[_gen_fovea_stream(img) for img in images_list_distored])
 					
 				context_stream_list.append(
-					_gen_context_stream(tf.pack(images_list_distored, axis=0)))
+					_gen_context_stream(images_list_distored, axis=0))
 				
 			else:
-				fovea_stream_list.append(tf.pack(
-					[_gen_fovea_stream(img) for img in images_list]))
+				fovea_stream_list.append(
+					[_gen_fovea_stream(img) for img in images_list])
 				context_stream_list.append(
-					_gen_context_stream(tf.pack(images_list, axis=0)))
+					_gen_context_stream(images_list, axis=0))
 				break
 
 		assert len(fovea_stream_list) == len(context_stream_list) 
 		
 		# sutract a mean value. TODO, Consider whitenning 
 		mean_tensor = tf.constant(
-			86, dtype=tf.float32, shape=(FLAGS.frame_counts, 120, 120, 3))
+			86, dtype=tf.float32, shape=(89, 89, 3))
 
-		fovea_stream_list = [tf.sub(video, mean_tensor) for video in fovea_stream_list]
-		context_stream_list = [tf.sub(video, mean_tensor) for video in context_stream_list]
+		fovea_stream_list = [[tf.sub(imgages, mean_tensor) 
+							for images in video]
+							for video in fovea_stream_list] 
+		context_stream_list = [[tf.sub(imgages, mean_tensor) 
+								for images in video]
+								for video in context_stream_list]
 
 		# Pick one to display the training images in the visualizer.
 		tf.image_summary('fovea_images', fovea_stream_list[0][0])
