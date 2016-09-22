@@ -9,9 +9,6 @@ Build the Network of VideoClassNet
 
 import tensorflow as tf
 
-from VideoClassNet_video_processer import batch_inputs
-
-
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -59,7 +56,7 @@ def _variable_with_weight_decay(name, shape, stddev=1e-4, wd=None):
 	return variable
 
 
-def _conv_layer(lastlayer, scope, name, d, f, s, wd=0.0):
+def _conv_layer(lastlayer, scope_outer, name, d, f, s, wd=0.0):
 	"""Convolution layer
 
 		Args:
@@ -73,12 +70,13 @@ def _conv_layer(lastlayer, scope, name, d, f, s, wd=0.0):
 		Returns:
 			Relu activated conv layer
 	"""
-	with tf.variable_scope(scope.name+'/'+name) as scope_var:
-		# Kernel has shape
-		# [Kernal_height, Kernal_width, in_channels, out_channels]
-		# wd=0.0 or None will not perform weight decay
+	#with tf.variable_scope(scope.) as scope_var:
+	# Kernel has shape
+	# [Kernal_height, Kernal_width, in_channels, out_channels]
+	# wd=0.0 or None will not perform weight decay
+	with tf.variable_scope(name) as scope:
 		c = lastlayer.get_shape()[-1].value
-		kernel = _variable_with_weight_decay(scope_var.name+'/weights',
+		kernel = _variable_with_weight_decay('weights',
 			shape=[f, f, c, d], wd=wd) 
 
 		#  for the same horizontal and vertices strides, 
@@ -87,10 +85,10 @@ def _conv_layer(lastlayer, scope, name, d, f, s, wd=0.0):
 		conv = tf.nn.conv2d(lastlayer, kernel, strides, padding='SAME')
 
 		# Add bias 
-		biases = _variable_on_cpu(scope_var.name + '/biases', 
+		biases = _variable_on_cpu('biases', 
 			[d], tf.constant_initializer(0.0))
 		conv_with_bias = tf.nn.bias_add(conv, biases)
-		return tf.nn.relu(conv_with_bias, name=scope_var.name)
+		return tf.nn.relu(conv_with_bias, name=scope.name)
 
 
 def _layer_before_fc(videos, scope):
@@ -138,7 +136,7 @@ def _layer_before_fc(videos, scope):
 
 	# Conv1 with shape
 	# [total_frames, 30, 30, 96] # (89 +1 ) // 3
-	conv1 = _conv_layer(video, scope, 'conv1', 96, 11, 3)
+	conv1 = _conv_layer(videos, scope, 'conv1', 96, 11, 3)
 	print(conv1.get_shape(), 'conv1')
 	# Norm1 layer with shape
 	# [total_frames, 30, 30, 96]
@@ -199,9 +197,9 @@ def inference(fovea_batch, context_batch, batch_size):
 
 	# (total_frames, 4, 4, 256) pool3
 	with tf.variable_scope('fovea') as scope:
-		fovea_pool3 = _layer_before_fc(fovea_video, scope)
+		fovea_pool3 = _layer_before_fc(fovea_batch, scope)
 	with tf.variable_scope('context') as scope:
-		context_pool3 = _layer_before_fc(context_video, scope)
+		context_pool3 = _layer_before_fc(context_batch, scope)
 
 	# Concatnate two streams along the channel dimension
 	# Flattern concated layer except the first dimension
@@ -225,7 +223,7 @@ def inference(fovea_batch, context_batch, batch_size):
 		weights = _variable_with_weight_decay('weights', [4096, NUM_CLASS])
 		biases = _variable_on_cpu('biases', [NUM_CLASS], 
 				tf.constant_initializer(0.1))
-		logits = tf.add(tf.matmul(fc1, weights) + biases,
+		logits = tf.add(tf.matmul(fc1, weights), biases,
 				name = scope.name)
 
 	# Return unormalised logits
@@ -236,7 +234,9 @@ def losses(logits, labels):
 	"""Compute losses and add L2 regulisations for all trainables
 	
 	"""
-	labels = tf.cast(labels, tf.int32)
+	assert logits.dtype == labels.dtype
+	logits.get_shape().assert_has_rank(2)
+	
 	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
 					logits, labels, name='cross_entropy_per_example')
 	cross_entropy_mean = tf.reduce_mean(
@@ -250,4 +250,4 @@ def losses(logits, labels):
 
 if __name__=='__main__':
 	# test
-	
+	pass
