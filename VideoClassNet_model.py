@@ -13,8 +13,11 @@ from VideoClassNet_video_processer import batch_inputs
 
 
 
-
 FLAGS = tf.app.flags.FLAGS
+
+NUM_CLASS = 102
+FRAME_COUNTS = 1  # Number of frames in a video
+BATCH_SIZE = 32
 
 def _variable_on_cpu(name, shape, initializer):
 	"""Helper to create a Variable stored on CPU memory.
@@ -55,7 +58,42 @@ def _variable_with_weight_decay(name, shape, stddev=1e-4, wd=None):
 		tf.add_to_collection('losses', weight_decay)
 	return variable
 
-def _singleframe_layer_before_fc(image, scope):
+
+def _conv_layer(lastlayer, scope, name, d, f, s, wd=0.0):
+	"""Convolution layer
+
+		Args:
+			scope: scope of the layer
+			name: string
+			d: int, number of kernel
+			f: int, spatial size of kernel
+			s: int, strides
+			wd: float, weight decay rate of kernel
+
+		Returns:
+			Relu activated conv layer
+	"""
+	with tf.variable_scope(scope.name+'/'+name) as scope_var:
+		# Kernel has shape
+		# [Kernal_height, Kernal_width, in_channels, out_channels]
+		# wd=0.0 or None will not perform weight decay
+		c = lastlayer.get_shape()[-1].value
+		kernel = _variable_with_weight_decay(scope_var.name+'/weights',
+			shape=[f, f, c, d], wd=wd) 
+
+		#  for the same horizontal and vertices strides, 
+		# strides = [1, stride, stride, 1]
+		strides = [1, s, s, 1]
+		conv = tf.nn.conv2d(lastlayer, kernel, strides, padding='SAME')
+
+		# Add bias 
+		biases = _variable_on_cpu(scope_var.name + '/biases', 
+			[d], tf.constant_initializer(0.0))
+		conv_with_bias = tf.nn.bias_add(conv, biases)
+		return tf.nn.relu(conv_with_bias, name=scope_var.name)
+
+
+def _layer_before_fc(videos, scope):
 	"""Netwotk before fully connected layer. i.e. a pooling layer
 
 	Using shorthand notation, the full architec-
@@ -68,54 +106,148 @@ def _singleframe_layer_before_fc(image, scope):
 	malization layers N are defined as described in Krizhevsky
 	et al. [11] and use the same parameters: k = 2, n = 5, α =
 	10 −4 , β = 0.5.
-
-	return last_layer_before_fc
-	"""
-
-
-
-
-def inference(fovea_batch, context_batch):
-	"""Produce losses across all videos in a batch
 	
+	Dimensions for each layer
+	(total_frames, 89, 89, 3) Video
+	(total_frames, 30, 30, 96) conv1
+	(total_frames, 30, 30, 96) norm1
+	(total_frames, 15, 15, 96) pool1
+	(total_frames, 15, 15, 256) conv2
+	(total_frames, 15, 15, 256) norm2
+	(total_frames, 8, 8, 256) pool2
+	(total_frames, 8, 8, 384) conv3
+	(total_frames, 8, 8, 384) conv4
+	(total_frames, 8, 8, 256) conv5
+	(total_frames, 4, 4, 256) pool3
+
+	Args:
+		video: 4D tensor, with [total_frames, height, width, 3]
+			where total_frames = FRAME_COUNTS * batch_size
+		scope: scope
+
+	return:
+		last_layer_before_fc: pool3 layer 
+			with (total_frames, 4, 4, 256) pool3
+	"""
+	print(videos.get_shape(), 'Raw')
+	## Declare parameters consistent with the paper
+	k, n, alpha, beta = 2, 5, 1e-4, 0.5 #for norm layers
+
+	# Max pooling layers.
+	k_pool, s_pool = [1, 2, 2, 1], [1, 2, 2, 1]
+
+	# Conv1 with shape
+	# [total_frames, 30, 30, 96] # (89 +1 ) // 3
+	conv1 = _conv_layer(video, scope, 'conv1', 96, 11, 3)
+	print(conv1.get_shape(), 'conv1')
+	# Norm1 layer with shape
+	# [total_frames, 30, 30, 96]
+	norm1 = tf.nn.lrn(conv1, k, n, alpha, beta, name='norm1')
+	print(norm1.get_shape(), 'norm1')
+
+	# Max pooling1 layer, with shape
+	# [total_frames, 15, 15, 96] # W2=(W1-F)/S +1
+	pool1 = tf.nn.max_pool(norm1, 
+		ksize=k_pool, strides=s_pool, padding='SAME', name='pool1')
+	print(pool1.get_shape(), 'pool1')
+	# Conv2 layer with shape
+	# [total_frames, 15, 15, 256]
+
+	conv2 = _conv_layer(pool1, scope, 'conv2', 256, 5, 1)
+	print(conv2.get_shape(), 'conv2')
+	# Norm2 layer with shape
+	norm2 = tf.nn.lrn(conv2, k, n, alpha, beta, name='norm2')
+	print(norm2.get_shape(), 'norm2')
+	# Max_pooling2 layer
+	# [total_frames, 3, 3, 256]
+	pool2 = tf.nn.max_pool(norm2, 
+		ksize=k_pool, strides=s_pool, padding='SAME', name='pool2')
+	print(pool2.get_shape(), 'pool2')
+	# Conv3 layer with shape
+	# [total_frames, 3, 3, 384]
+	conv3 = _conv_layer(pool2, scope, 'conv3', 384, 3, 1)
+	print(conv3.get_shape(), 'conv3')
+	# Conv4 layer with shape
+	# [total_frames, 3, 3, 384]
+	conv4 = _conv_layer(conv3, scope, 'conv4', 384, 3, 1)
+	print(conv4.get_shape(), 'conv4')
+	# Conv5 layer with shape
+	# [total_frames, 3, 3, 256]
+	conv5 = _conv_layer(conv4, scope, 'conv5', 256, 3, 1)
+	print(conv5.get_shape(), 'conv5')
+	pool3 = tf.nn.max_pool(conv5,
+		ksize=k_pool, strides=s_pool, padding='SAME', name='pool3')
+	print(pool3.get_shape(), 'pool3')
+	return pool3
+
+
+
+
+def inference(fovea_batch, context_batch, batch_size):
+	"""Produce losses across all videos in a batch
+		
+		Args:
+			fovea_batch: 4D tensor [total_frames, 89, 89, 3]
+			context_batch: 4D tensor [total_frames, 89, 89, 3]
+			batch_size: 1D tensor with length [total_frames]
 
 		Returns:
-			logits: 1D tensor with length=num_class,
-				 unnormalized likelyhood probability averaged 
-				 across a abtch
+			logits: 2D tensor with shape[total_frames, NUM_CLASS],
+				 unnormalized likelyhood probability
 	"""
+	total_frames = FRAME_COUNTS * batch_size
 
-	# Multi-threading, each thread return a loss from a video
+	# (total_frames, 4, 4, 256) pool3
+	with tf.variable_scope('fovea') as scope:
+		fovea_pool3 = _layer_before_fc(fovea_video, scope)
+	with tf.variable_scope('context') as scope:
+		context_pool3 = _layer_before_fc(context_video, scope)
 
+	# Concatnate two streams along the channel dimension
+	# Flattern concated layer except the first dimension
+	# so we can perform a single matrix multiply
+	with tf.variable_scope('reshaped_concated_pool3') as scope:
+		concated_pool3 = tf.concat(concat_dim=3, 
+						values=[fovea_pool3, context_pool3])
+		reshaped_concated = tf.reshape(concated_pool3, [total_frames, -1])
+		dim = reshaped_concated.get_shape()[1].value
 
-	logit_video = []
-	for fovea_video, context_video in zip(fovea_batch, context_batch):
-		
-		for fovea_image, context_image in zip(fovea_video, context_video):
-			# Porcess two streams seperately
-			fovea_layer_before_fc = _singleframe_layer_before_fc(fovea_image)
-			context_layer_before_fc = _singleframe_layer_before_fc(context_image)
-		# Connect two streams to fc
+	# Fully connected layer 1
+	with tf.variable_scope('fc1') as scope:
+		weights = _variable_with_weight_decay('weights', [dim, 4096])
+		biases = _variable_on_cpu('biases', [4096], 
+				tf.constant_initializer(0.1))
+		fc1 = tf.nn.relu(tf.matmul(reshaped_concated, weights) + biases,
+				name = scope.name)
 
-		fc1 = tf...
+	# Fully connected layer 2
+	with tf.variable_scope('fc2') as scope:
+		weights = _variable_with_weight_decay('weights', [4096, NUM_CLASS])
+		biases = _variable_on_cpu('biases', [NUM_CLASS], 
+				tf.constant_initializer(0.1))
+		logits = tf.add(tf.matmul(fc1, weights) + biases,
+				name = scope.name)
 
-		weights = _variable_on_cpu( , shape[ ,NUM_CLASS])
-		logits = tf.matmul(2Dtensor multiplied) + biases
-		
-		logit_video.append(soft_max)
-	logits = tf.reduce_mean(logit_video)
+	# Return unormalised logits
 	return logits
 
-def losses(logits, label_batch):
 
-	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits, labels)
-	cross_entropy_mean = tf.reduce_mean(cross_entropy)
+def losses(logits, labels):
+	"""Compute losses and add L2 regulisations for all trainables
+	
+	"""
+	labels = tf.cast(labels, tf.int32)
+	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
+					logits, labels, name='cross_entropy_per_example')
+	cross_entropy_mean = tf.reduce_mean(
+					cross_entropy, name='cross_entropy_mean')
+	tf.add_to_collection('losses', cross_entropy_mean)
+	
+ 	# The total loss is defined as the cross entropy loss plus 
+ 	# all of the weight decay terms (L2 loss).
+	return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
-	return cross_entropy_mean #or tf.add_n(tf.ge_collection('losses')) for L2 term
 
-
-
-def train(total_loss, global_step):
-
-
-	return train_op
+if __name__=='__main__':
+	# test
+	

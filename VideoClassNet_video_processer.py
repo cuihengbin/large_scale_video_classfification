@@ -186,7 +186,7 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		num_preprocess_threads: integer, total number of preprocessing threads
 
 	Returns:
-		context_images: list of list of 3D tensors. 
+		context_images: list of 4D tensors. 
 		fovea_images: 4-D float Tensor of a batch of central high resolution images
 		labels: 1-D integer Tensor of [batch_size]
 	"""
@@ -238,60 +238,63 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 				batch_size=1,
 				num_threads=FLAGS.num_threads)
 		
-		# Apply same flip and color distrotion on images from the same
-		# clip.
+		# Apply flip and color distrotion consistently for images 
+		# in the same clip.
 		images_in_batch_list = tf.unpack(images_batch, axis=0)
 		tf.assert_rank(images_in_batch_list[0], 4)
 
 		fovea_stream_list = []
 		context_stream_list = []
 		for seed, images in enumerate(images_in_batch_list):
-			time = datetime.now()
 			images_list = tf.unpack(images, axis=0)
 
 			assert len(images_list)==FLAGS.frame_counts 
 			tf.assert_rank(images_list[0], 3)
-
-
 
 			if train:
 				images_list_distored = [
 					_distort_image(img, seed) for img in images_list]
 				# Generates fovea and context streams, seperately.
 				# Since fovea stream operates on 3D tensors. 
-				# And context sream operates on 4D tensors.
-				fovea_stream_list.append(
-					[_gen_fovea_stream(img) for img in images_list_distored])
+				# And context stream operates on 4D tensors.
+				fovea_stream_list.append(tf.pack(
+					[_gen_fovea_stream(img) for img in images_list_distored]))
 					
 				context_stream_list.append(
-					_gen_context_stream(images_list_distored, axis=0))
+					_gen_context_stream(tf.pack(images_list_distored, axis=0)))
 				
 			else:
-				fovea_stream_list.append(
-					[_gen_fovea_stream(img) for img in images_list])
+				fovea_stream_list.append(tf.pack(
+					[_gen_fovea_stream(img) for img in images_list]))
 				context_stream_list.append(
-					_gen_context_stream(images_list, axis=0))
+					_gen_context_stream(tf.pack(images_list, axis=0)))
 				break
 
 		assert len(fovea_stream_list) == len(context_stream_list) 
 		
 		# sutract a mean value. TODO, Consider whitenning 
 		mean_tensor = tf.constant(
-			86, dtype=tf.float32, shape=(89, 89, 3))
+			86, dtype=tf.float32, shape=(FLAGS.frame_counts, 89, 89, 3))
 
-		fovea_stream_list = [[tf.sub(imgages, mean_tensor) 
-							for images in video]
+		fovea_stream_list = [tf.sub(video, mean_tensor) 
 							for video in fovea_stream_list] 
-		context_stream_list = [[tf.sub(imgages, mean_tensor) 
-								for images in video]
+		context_stream_list = [tf.sub(video, mean_tensor) 
 								for video in context_stream_list]
 
 		# Pick one to display the training images in the visualizer.
 		tf.image_summary('fovea_images', fovea_stream_list[0][0])
 		tf.image_summary('context_images', fovea_stream_list[0][0])
 
-		print(type(fovea_stream_list))
-		return fovea_stream_list, context_stream_list, label_batch
+		# Merge the first and second dimensions of the two streams
+		# the result fisrt dimension accounts for all frames in a batch
+		fovea_stream_batch = tf.reshape(tf.pack(fovea_stream_list),
+							[FLAGS.batch_size*FLAGS.frame_counts, 
+							89, 89, 3])
+		context_stream_batch = tf.reshape(tf.pack(context_stream_list),
+							[FLAGS.batch_size*FLAGS.frame_counts, 
+							89, 89, 3])
+
+		return fovea_stream_batch, context_stream_batch, label_batch
 
 
 
