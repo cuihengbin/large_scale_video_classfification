@@ -176,6 +176,20 @@ def _gen_context_stream(images):
 
 
 
+def _crop_and_whiten(images, train):
+	if train:
+		images_cropped = [tf.random_crop(images[i], 178, 178) 
+						for i in range(FLAGS.frame_counts)]
+	else:
+		images_cropped = [tf.resize_image_with_crop_or_pad(
+						images[i], 178, 178) 
+						for i in range(FLAGS.frame_counts)]
+	image_whitened = [tf.image.per_image_whitening(image)
+						for image in images_cropped]
+	return tf.pack(image_whitened)
+
+
+
 def batch_inputs(dataset, train):
 	"""
 	
@@ -210,10 +224,16 @@ def batch_inputs(dataset, train):
 		images_str, label_index = _parse_example_proto(serialized_example)
 		
 
-		# Reshape images to size (frame_counts, 178, 178, channel)
+		# Reshape images to size (frame_counts, height, width, channel)
 		# Value of the first dimension depends on the sampling trategy
 		images_reshaped = tf.reshape(images_str, (
-			FLAGS.frame_counts, 178, 178, 3))
+			FLAGS.frame_counts, IMAGE_HEIGHT, IMAGE_WIDTH, 3))
+
+		# Resize images to a square shape, with size equal to  178
+		# to be consistent with the paper
+		# And also perform Whitenning
+		images_reshaped = _crop_and_whiten(images_reshaped, train)
+
 
 		if train:
 			# Retrive FLAGS.batch_size examples. Under the hood, its fires
@@ -263,6 +283,15 @@ def batch_inputs(dataset, train):
 				break
 
 		assert len(fovea_stream_list) == len(context_stream_list) 
+		
+		# sutract a mean value. TODO, Consider whitenning 
+		mean_tensor = tf.constant(
+			86, dtype=tf.float32, shape=(FLAGS.frame_counts, 89, 89, 3))
+
+		fovea_stream_list = [tf.sub(video, mean_tensor) 
+							for video in fovea_stream_list] 
+		context_stream_list = [tf.sub(video, mean_tensor) 
+								for video in context_stream_list]
 
 		# Merge the first and second dimensions of the two streams
 		# the result fisrt dimension accounts for all frames in a batch

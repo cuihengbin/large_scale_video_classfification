@@ -41,8 +41,6 @@ tf.app.flags.DEFINE_integer('test_shards', 600,
 
 FLAGS = tf.app.flags.FLAGS
 
-SQUARE_SIZE = 178
-
 def _int64_feature(value):
   """Wrapper for inserting int64 features into Example proto."""
   if not isinstance(value, list):
@@ -103,7 +101,7 @@ def _convert_to_example(video_filename, images, class_label):
 	return example
 
 
-def _extract_imgs(name, video_filename, strategy):
+def _extract_imgs(video_filename, strategy):
 	"""
 	Given a video file, returns its frames bsaed on selected strategy
 
@@ -124,7 +122,7 @@ def _extract_imgs(name, video_filename, strategy):
 	if total_frames < 3:
 		print('{0} only has {1} frames, skipped!'
 			.format(video_filename, total_frames))
-		return np.array([])
+		return None
 	if strategy == 'single':
 		images_per_vid = 1
 
@@ -135,25 +133,14 @@ def _extract_imgs(name, video_filename, strategy):
 		# Read image 
 		success, img = vidcap.read()
 		if success:
-			# Resize img to square
-			if name == 'train':
-				# Random crop a SQUARE_SIZE img
-				reshaped_img = tf.random_crop(img, [SQUARE_SIZE, SQUARE_SIZE, 3])
-			else:
-				# Crop the central SQUARE_SIZE img
-				reshaped_img = tf.image.resize_image_with_crop_or_pad(img,
-								SQUARE_SIZE, SQUARE_SIZE)
-
-			# Whitenning img
-			float_image = tf.image.per_image_whitening(reshaped_img)
-			images += [float_image]
+			images += [img]
 		else:
 			print('Video %s capture failed! Skipped!')
-			return np.array([])
+			return None
 	images = np.array(images)
 	assert images.shape[0] == images_per_vid
     
-	return np.reshape(images, [images_per_vid, SQUARE_SIZE, SQUARE_SIZE, 3])
+	return images
 	
 
 
@@ -257,7 +244,7 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 	for s in range(num_shards_per_threads):
 		# Generate a sharded version of the file name, e.g. 'train-00002-of-01000'
 		shard = thread_index * num_shards_per_threads + s
-		output_filename = '%s-%.5d-of-%.5d.TFRecords' % (name, shard, num_shards)
+		output_filename = '%s-%.5d-of-%.5d.TFRecord' % (name, shard, num_shards)
 		output_file = os.path.join(output_directory, output_filename)
 		writer = tf.python_io.TFRecordWriter(output_file)
 
@@ -265,22 +252,24 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 		files_in_shard = np.arange(shard_ranges[s], shard_ranges[s + 1], dtype=int)
 		for i in files_in_shard:
 			filename = filenames[i]
-			images = _extract_imgs(name, filename, FLAGS.sampling_strategy)
+			images = _extract_imgs(filename, FLAGS.sampling_strategy)
 
-			# Check images have correct shape and contains no NaN
-			if images.shape == (1,178,178,3) and \
-				np.isnan(sum(images)).sum() == 0:
-				# Write images 
-				example = _convert_to_example(filename, images, class_label)
-				writer.write(example.SerializeToString())
-				shard_counter += 1
-				counter += 1
-
-				#print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
-				#	.format(datetime.now(), thread_index, counter, num_files_in_thread))
-				#sys.stdout.flush()
-			else:
+			if not isinstance(images, np.ndarray):
 				failed_video_counts += 1
+				print('{0} [thread {1}]: Falied capturing {2}.'
+				.format(datetime.now(), thread_index, filename))
+				sys.stdout.flush()
+				continue
+
+			example = _convert_to_example(filename, images, class_label)
+
+			writer.write(example.SerializeToString())
+			shard_counter += 1
+			counter += 1
+
+			print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
+				.format(datetime.now(), thread_index, counter, num_files_in_thread))
+			sys.stdout.flush()
 
 		print('{0} [thread {1}]: Wrote {2} videos to {3}'
 			.format(datetime.now(), thread_index, shard_counter, output_filename))
@@ -288,8 +277,6 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 	print('{0} [thread {1}]: Wrote {2} videos to {3} shards.'
 		.format(datetime.now(), thread_index, counter, num_files_in_thread))
 	sys.stdout.flush()
-
-	print('Bad Images: ', failed_video_counts)
 
 
 
@@ -357,9 +344,6 @@ def main(unused_args):
 					FLAGS.output_valid_directory, 200, class_label)
 	_process_dataset('test', data_split_filenames['test_filenames'],
 					FLAGS.output_test_directory, 600, class_label)
-
-	for k,v in class_label.items():
-		print(k,v)
 
 if __name__ == '__main__':
 	tf.app.run()
