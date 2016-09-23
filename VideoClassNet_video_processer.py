@@ -178,7 +178,7 @@ def _gen_context_stream(images):
 
 def _crop_and_whiten(images, train):
 	if train:
-		images_cropped = [tf.random_crop(images[i], 178, 178) 
+		images_cropped = [tf.random_crop(images[i], [178, 178, 3]) 
 						for i in range(FLAGS.frame_counts)]
 	else:
 		images_cropped = [tf.resize_image_with_crop_or_pad(
