@@ -134,20 +134,18 @@ def _extract_imgs(name, video_filename, strategy):
 
 		# Read image 
 		success, img = vidcap.read()
-
-		# Resize img to square
-		if name == 'train':
-			# Random crop a SQUARE_SIZE img
-			reshaped_img = tf.random_crop(img, [SQUARE_SIZE, SQUARE_SIZE, 3])
-		else:
-			# Crop the central SQUARE_SIZE img
-			reshaped_img = tf.image.resize_image_with_crop_or_pad(img,
-							SQUARE_SIZE, SQUARE_SIZE)
-
-		# Whitenning img
-		float_image = tf.image.per_image_whitening(reshaped_img)
-
 		if success:
+			# Resize img to square
+			if name == 'train':
+				# Random crop a SQUARE_SIZE img
+				reshaped_img = tf.random_crop(img, [SQUARE_SIZE, SQUARE_SIZE, 3])
+			else:
+				# Crop the central SQUARE_SIZE img
+				reshaped_img = tf.image.resize_image_with_crop_or_pad(img,
+								SQUARE_SIZE, SQUARE_SIZE)
+
+			# Whitenning img
+			float_image = tf.image.per_image_whitening(reshaped_img)
 			images += [float_image]
 		else:
 			print('Video %s capture failed! Skipped!')
@@ -155,7 +153,7 @@ def _extract_imgs(name, video_filename, strategy):
 	images = np.array(images)
 	assert images.shape[0] == images_per_vid
     
-	return images
+	return np.reshape(images, [images_per_vid, SQUARE_SIZE, SQUARE_SIZE, 3])
 	
 
 
