@@ -19,8 +19,8 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 
 
 
-tf.app.flags.DEFINE_integer('batch_size', 32,
-                            """Number of images to process in a batch.""")
+#tf.app.flags.DEFINE_integer('batch_size', 32,
+#                            """Number of images to process in a batch.""")
 tf.app.flags.DEFINE_integer('num_threads', 10,
 							"""Number of threads to run batching""")
 
@@ -176,7 +176,7 @@ def _gen_context_stream(images):
 
 
 
-def batch_inputs(dataset, train, num_preporcess_threads=8):
+def batch_inputs(dataset, train):
 	"""
 	
 	Args:
@@ -190,6 +190,7 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		fovea_images: 4-D float Tensor of a batch of central high resolution images
 		labels: 1-D integer Tensor of [batch_size]
 	"""
+
 	reader = tf.TFRecordReader()
 	with tf.name_scope('batch_porcessing'):
 		filenames = dataset.filenames
@@ -281,10 +282,6 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		context_stream_list = [tf.sub(video, mean_tensor) 
 								for video in context_stream_list]
 
-		# Pick one to display the training images in the visualizer.
-		tf.image_summary('fovea_images', fovea_stream_list[0][0])
-		tf.image_summary('context_images', fovea_stream_list[0][0])
-
 		# Merge the first and second dimensions of the two streams
 		# the result fisrt dimension accounts for all frames in a batch
 		fovea_stream_batch = tf.reshape(tf.pack(fovea_stream_list),
@@ -293,6 +290,10 @@ def batch_inputs(dataset, train, num_preporcess_threads=8):
 		context_stream_batch = tf.reshape(tf.pack(context_stream_list),
 							[FLAGS.batch_size*FLAGS.frame_counts, 
 							89, 89, 3])
+
+		# Display the training images in the visualizer.
+		tf.image_summary('fovea_images', fovea_stream_batch)
+		tf.image_summary('context_images', context_stream_batch)
 
 		return fovea_stream_batch, context_stream_batch, label_batch
 

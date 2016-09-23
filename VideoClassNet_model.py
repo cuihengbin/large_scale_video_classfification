@@ -12,7 +12,7 @@ import tensorflow as tf
 
 FLAGS = tf.app.flags.FLAGS
 
-NUM_CLASS = 102
+NUM_CLASS = 101 # Without background class
 FRAME_COUNTS = 1  # Number of frames in a video
 BATCH_SIZE = 32
 
@@ -32,7 +32,7 @@ def _variable_on_cpu(name, shape, initializer):
 		variable = tf.get_variable(name, shape, initializer=initializer, dtype=dtype)
 	return variable
 
-def _variable_with_weight_decay(name, shape, stddev=1e-4, wd=None):
+def _variable_with_weight_decay(name, shape, stddev=1e-3, wd=None):
 	"""Helper to create an initialized Variable with weight decay
 
 	Args:
@@ -56,7 +56,7 @@ def _variable_with_weight_decay(name, shape, stddev=1e-4, wd=None):
 	return variable
 
 
-def _conv_layer(lastlayer, scope_outer, name, d, f, s, wd=0.0):
+def _conv_layer(lastlayer, scope_name, name, d, f, s, wd=0.0):
 	"""Convolution layer
 
 		Args:
@@ -214,7 +214,7 @@ def inference(fovea_batch, context_batch, batch_size):
 	with tf.variable_scope('fc1') as scope:
 		weights = _variable_with_weight_decay('weights', [dim, 4096])
 		biases = _variable_on_cpu('biases', [4096], 
-				tf.constant_initializer(0.1))
+				tf.constant_initializer(0.))
 		fc1 = tf.nn.relu(tf.matmul(reshaped_concated, weights) + biases,
 				name = scope.name)
 
@@ -222,7 +222,7 @@ def inference(fovea_batch, context_batch, batch_size):
 	with tf.variable_scope('fc2') as scope:
 		weights = _variable_with_weight_decay('weights', [4096, NUM_CLASS])
 		biases = _variable_on_cpu('biases', [NUM_CLASS], 
-				tf.constant_initializer(0.1))
+				tf.constant_initializer(0.))
 		logits = tf.add(tf.matmul(fc1, weights), biases,
 				name = scope.name)
 
@@ -234,10 +234,14 @@ def losses(logits, labels):
 	"""Compute losses and add L2 regulisations for all trainables
 	
 	"""
-	assert logits.dtype == labels.dtype
+	labels = tf.reshape(labels, [32])
+	labels = tf.cast(labels, tf.int32)
+	
 	logits.get_shape().assert_has_rank(2)
 	
-	cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
+	# TODO, check lables shape and type
+
+	cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
 					logits, labels, name='cross_entropy_per_example')
 	cross_entropy_mean = tf.reduce_mean(
 					cross_entropy, name='cross_entropy_mean')
@@ -251,3 +255,6 @@ def losses(logits, labels):
 if __name__=='__main__':
 	# test
 	pass
+
+
+

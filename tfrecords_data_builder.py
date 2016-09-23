@@ -122,7 +122,7 @@ def _extract_imgs(video_filename, strategy):
 	if total_frames < 3:
 		print('{0} only has {1} frames, skipped!'
 			.format(video_filename, total_frames))
-		return None
+		return np.array([])
 	if strategy == 'single':
 		images_per_vid = 1
 
@@ -136,7 +136,7 @@ def _extract_imgs(video_filename, strategy):
 			images += [img]
 		else:
 			print('Video %s capture failed! Skipped!')
-			return None
+			return np.array([])
 	images = np.array(images)
 	assert images.shape[0] == images_per_vid
     
@@ -244,7 +244,7 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 	for s in range(num_shards_per_threads):
 		# Generate a sharded version of the file name, e.g. 'train-00002-of-01000'
 		shard = thread_index * num_shards_per_threads + s
-		output_filename = '%s-%.5d-of-%.5d.TFRecord' % (name, shard, num_shards)
+		output_filename = '%s-%.5d-of-%.5d.TFRecords' % (name, shard, num_shards)
 		output_file = os.path.join(output_directory, output_filename)
 		writer = tf.python_io.TFRecordWriter(output_file)
 
@@ -254,22 +254,20 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 			filename = filenames[i]
 			images = _extract_imgs(filename, FLAGS.sampling_strategy)
 
-			if not isinstance(images, np.ndarray):
+			# Check images have correct shape and contains no NaN
+			if images.shape == (1,240,320,3) and \
+				np.isnan(sum(images)).sum() == 0:
+				# Write images 
+				example = _convert_to_example(filename, images, class_label)
+				writer.write(example.SerializeToString())
+				shard_counter += 1
+				counter += 1
+
+				#print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
+				#	.format(datetime.now(), thread_index, counter, num_files_in_thread))
+				#sys.stdout.flush()
+			else:
 				failed_video_counts += 1
-				print('{0} [thread {1}]: Falied capturing {2}.'
-				.format(datetime.now(), thread_index, filename))
-				sys.stdout.flush()
-				continue
-
-			example = _convert_to_example(filename, images, class_label)
-
-			writer.write(example.SerializeToString())
-			shard_counter += 1
-			counter += 1
-
-			print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
-				.format(datetime.now(), thread_index, counter, num_files_in_thread))
-			sys.stdout.flush()
 
 		print('{0} [thread {1}]: Wrote {2} videos to {3}'
 			.format(datetime.now(), thread_index, shard_counter, output_filename))
@@ -277,6 +275,8 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 	print('{0} [thread {1}]: Wrote {2} videos to {3} shards.'
 		.format(datetime.now(), thread_index, counter, num_files_in_thread))
 	sys.stdout.flush()
+
+	print('Bad Images: ', failed_video_counts)
 
 
 
@@ -344,6 +344,9 @@ def main(unused_args):
 					FLAGS.output_valid_directory, 200, class_label)
 	_process_dataset('test', data_split_filenames['test_filenames'],
 					FLAGS.output_test_directory, 600, class_label)
+
+	for k,v in class_label.items():
+		print(k,v)
 
 if __name__ == '__main__':
 	tf.app.run()
