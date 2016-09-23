@@ -117,8 +117,6 @@ def train():
 			break
 		"""
 
-		for var in tf.get_collection('weights'):
-			print(sess.run(var).sum())
 
 		
 		start_time = time.time()

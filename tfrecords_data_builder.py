@@ -41,6 +41,8 @@ tf.app.flags.DEFINE_integer('test_shards', 600,
 
 FLAGS = tf.app.flags.FLAGS
 
+SQUARE_SIZE = 178
+
 def _int64_feature(value):
   """Wrapper for inserting int64 features into Example proto."""
   if not isinstance(value, list):
@@ -101,7 +103,7 @@ def _convert_to_example(video_filename, images, class_label):
 	return example
 
 
-def _extract_imgs(video_filename, strategy):
+def _extract_imgs(name, video_filename, strategy):
 	"""
 	Given a video file, returns its frames bsaed on selected strategy
 
@@ -132,8 +134,21 @@ def _extract_imgs(video_filename, strategy):
 
 		# Read image 
 		success, img = vidcap.read()
+
+		# Resize img to square
+		if name == 'train':
+			# Random crop a SQUARE_SIZE img
+			reshaped_img = tf.random_crop(img, [SQUARE_SIZE, SQUARE_SIZE, 3])
+		else:
+			# Crop the central SQUARE_SIZE img
+			reshaped_img = tf.image.resize_image_with_crop_or_pad(img,
+							SQUARE_SIZE, SQUARE_SIZE)
+
+		# Whitenning img
+		float_image = tf.image.per_image_whitening(reshaped_img)
+
 		if success:
-			images += [img]
+			images += [float_image]
 		else:
 			print('Video %s capture failed! Skipped!')
 			return np.array([])
@@ -252,7 +267,7 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 		files_in_shard = np.arange(shard_ranges[s], shard_ranges[s + 1], dtype=int)
 		for i in files_in_shard:
 			filename = filenames[i]
-			images = _extract_imgs(filename, FLAGS.sampling_strategy)
+			images = _extract_imgs(name, filename, FLAGS.sampling_strategy)
 
 			# Check images have correct shape and contains no NaN
 			if images.shape == (1,240,320,3) and \
