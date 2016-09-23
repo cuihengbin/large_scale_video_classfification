@@ -270,7 +270,7 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 			images = _extract_imgs(name, filename, FLAGS.sampling_strategy)
 
 			# Check images have correct shape and contains no NaN
-			if images.shape == (1,240,320,3) and \
+			if images.shape == (1,178,178,3) and \
 				np.isnan(sum(images)).sum() == 0:
 				# Write images 
 				example = _convert_to_example(filename, images, class_label)
