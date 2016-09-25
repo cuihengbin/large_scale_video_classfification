@@ -14,8 +14,12 @@ import threading
 import cv2
 import numpy as np
 import tensorflow as tf
+import urllib.request
+from pyunpack import Archive
 
-tf.app.flags.DEFINE_string('video_data_directory', '/tmp/UCF101/videos/',
+tf.app.flags.DEFINE_string('root_data_dir', '/tmp/UCF101',
+							'Root dir for data')
+tf.app.flags.DEFINE_string('video_data_directory', '/tmp/UCF101/UCF-101/',
 							'Extracted UCF101 data, contains *.avi')
 tf.app.flags.DEFINE_string('ucfTrainTestlist', '/tmp/UCF101/ucfTrainTestlist/',
 							'files specifying trainning and testing datasets')
@@ -40,6 +44,10 @@ tf.app.flags.DEFINE_integer('test_shards', 600,
 
 
 FLAGS = tf.app.flags.FLAGS
+
+UCF101_URL_avi = 'http://crcv.ucf.edu/data/UCF101/UCF101.rar'
+UCF101_URL_txt = 'http://crcv.ucf.edu/data/UCF101/UCF101TrainTestSplits-RecognitionTask.zip'
+
 
 def _int64_feature(value):
   """Wrapper for inserting int64 features into Example proto."""
@@ -138,10 +146,12 @@ def _extract_imgs(video_filename, strategy):
 			print('Video %s capture failed! Skipped!')
 			return None
 	images = np.array(images)
-	assert images.shape[0] == images_per_vid
-    
-	return images
 	
+	if images.shape == (1, 240, 320, 3) and not np.isnan(images).any():
+		return images
+	else:
+		return None
+    
 
 
 def _filename_parser(file_list_name):
@@ -204,14 +214,14 @@ def _lookup_dicts():
 	# ApplyEyeMakeup/v_ApplyEyeMakeup_g08_c02.avi 1
 	# since we have class label dict already, we simply ignore label info
 	data_split_filenames = dict()
-	data_split_filenames['train_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames.split('/')[1]) 
+	data_split_filenames['train_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames)#.split('/')[1]) 
 												for fn in train_files_list
                                                	for filenames in _filename_parser(fn)]
-	data_split_filenames['valid_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames.split('/')[1]) 
+	data_split_filenames['valid_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames)#.split('/')[1]) 
 												for fn in valid_files_list 
                                                for filenames in _filename_parser(fn)]
 																										
-	data_split_filenames['test_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames.split('/')[1]) 
+	data_split_filenames['test_filenames'] = [os.path.join(FLAGS.video_data_directory, filenames)#.split('/')[1]) 
 												for fn in test_files_list 
                                               for filenames in _filename_parser(fn)]
 
@@ -254,22 +264,19 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 			filename = filenames[i]
 			images = _extract_imgs(filename, FLAGS.sampling_strategy)
 
-			if not isinstance(images, np.ndarray):
+			if not images is None:
+
+				example = _convert_to_example(filename, images, class_label)
+
+				writer.write(example.SerializeToString())
+				shard_counter += 1
+				counter += 1
+			else: 
 				failed_video_counts += 1
-				print('{0} [thread {1}]: Falied capturing {2}.'
-				.format(datetime.now(), thread_index, filename))
-				sys.stdout.flush()
-				continue
 
-			example = _convert_to_example(filename, images, class_label)
-
-			writer.write(example.SerializeToString())
-			shard_counter += 1
-			counter += 1
-
-			print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
-				.format(datetime.now(), thread_index, counter, num_files_in_thread))
-			sys.stdout.flush()
+			#print('{0} [thread {1}]: Processed {2} of {3} videos in thread batch.'
+			#	.format(datetime.now(), thread_index, counter, num_files_in_thread))
+			#sys.stdout.flush()
 
 		print('{0} [thread {1}]: Wrote {2} videos to {3}'
 			.format(datetime.now(), thread_index, shard_counter, output_filename))
@@ -277,6 +284,7 @@ def _process_video_files_batch(name, thread_index, ranges, filenames, output_dir
 	print('{0} [thread {1}]: Wrote {2} videos to {3} shards.'
 		.format(datetime.now(), thread_index, counter, num_files_in_thread))
 	sys.stdout.flush()
+	print('Bad videos: ', failed_video_counts)
 
 
 
@@ -324,9 +332,33 @@ def _process_dataset(name, filenames, output_directory, num_shards, class_label)
 	sys.stdout.flush()
 	
 
+def maybe_download_and_extract(data_url):
+    """Download and extract the tarball from Alex's website."""
+    dest_directory = FLAGS.root_data_dir
+    if not os.path.exists(dest_directory):
+        os.makedirs(dest_directory)
+    filename = data_url.split('/')[-1]
+    filepath = os.path.join(dest_directory, filename)
+    if not os.path.exists(filepath):
+        def _progress(count, block_size, total_size):
+            sys.stdout.write('\r>> Downloading %s %.1f%%' % (filename,
+                float(count * block_size) / float(total_size) * 100.0))
+            sys.stdout.flush()
+        filepath, _ = urllib.request.urlretrieve(data_url, filepath, _progress)
+        print()
+        statinfo = os.stat(filepath)
+        print('Successfully downloaded', filename, statinfo.st_size, 'bytes.')
+        Archive(filepath).extractall(dest_directory)
 
 def main(unused_args):
 
+	# Download fata
+	if not os.path.exists(FLAGS.ucfTrainTestlist):
+		maybe_download_and_extract(UCF101_URL_txt)
+	#elif not os.path.exists(FLAGS.video_data_directory):
+		maybe_download_and_extract(UCF101_URL_avi)
+
+	# Generates TFRecords data
 	for output_dir in [FLAGS.output_train_directory, 
 					   FLAGS.output_valid_directory,
 					   FLAGS.output_test_directory]:

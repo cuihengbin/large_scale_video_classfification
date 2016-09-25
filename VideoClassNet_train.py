@@ -14,12 +14,12 @@ from VideoClassNet_model import inference, losses
 
 tf.app.flags.DEFINE_integer('batch_size', 32,
                           """Number of images to process in a batch.""")
-tf.app.flags.DEFINE_float('initial_lr', 0.,
+tf.app.flags.DEFINE_float('initial_lr', 0.009,
 					    """Initial learning rate""")
 tf.app.flags.DEFINE_float('lr_decay_rate', 0.9,
 					    """Initial learning rate""")
 
-tf.app.flags.DEFINE_integer('max_steps', 50000,
+tf.app.flags.DEFINE_integer('max_steps', 28000,
                           """Number of steps to train.""")
 tf.app.flags.DEFINE_string('summary_path', 'summary',
 						"""Directory to save summaries""")
@@ -57,9 +57,10 @@ def _train_op(total_loss, global_step):
 
 	# Choose an optimizer and minimise loss
 	optimizer = tf.train.GradientDescentOptimizer(lr)
+
 	train_op = optimizer.minimize(total_loss, global_step=global_step)
 
-	return train_op
+	return train_op##, grads
 
 
 
@@ -106,31 +107,12 @@ def train():
 
 	for step in range(FLAGS.max_steps):
 		# train for each step
-		"""
-		f,c,l = sess.run([fovea_stream_batch, context_stream_batch, label_batch])
-		
-		print(f.mean(), 'mean for fovea')
-		print(c.mean(), 'mean for context')
-		print(l.mean(), 'mean for labels')
 
-		if step == 50:
-			break
-		"""
-
-
-		
 		start_time = time.time()
-		f,c,l,_, loss_value = sess.run([fovea_stream_batch, context_stream_batch, label_batch, train_op, total_loss])
+		_, loss_value = sess.run([train_op, total_loss])
 		sec_per_batch = time.time() - start_time
 
 		assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
-		if np.isnan(loss_value):
-			#f,c,l = sess.run([fovea_stream_batch, context_stream_batch, label_batch])
-			
-			print(f.mean(), 'mean for fovea')
-			print(c.mean(), 'mean for context')
-			print(l.mean(), 'mean for labels')
-			break
 
 		if step % 10 == 0:
 			example_per_sec = FLAGS.batch_size / sec_per_batch

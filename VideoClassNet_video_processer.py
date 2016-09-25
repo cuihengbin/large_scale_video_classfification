@@ -112,11 +112,14 @@ def _distort_image(image, seed, scope=None):
 	Returns:
 	color-distorted image
 	"""
+
+
 	with tf.op_scope([image], scope, 'distort'):
 		# Random flip
 		image = tf.image.random_flip_left_right(
 			image, seed=seed)
 
+		"""
 		# Distor color
 		image = tf.image.random_brightness(
 			image, max_delta=32. / 255., seed=seed)
@@ -126,6 +129,7 @@ def _distort_image(image, seed, scope=None):
 			image, max_delta=0.2, seed=seed)
 		image = tf.image.random_contrast(
 			image, lower=0.5, upper=1.5, seed=seed)
+		"""
 
 	return image
 
@@ -284,15 +288,6 @@ def batch_inputs(dataset, train):
 
 		assert len(fovea_stream_list) == len(context_stream_list) 
 		
-		# sutract a mean value. TODO, Consider whitenning 
-		mean_tensor = tf.constant(
-			86, dtype=tf.float32, shape=(FLAGS.frame_counts, 89, 89, 3))
-
-		fovea_stream_list = [tf.sub(video, mean_tensor) 
-							for video in fovea_stream_list] 
-		context_stream_list = [tf.sub(video, mean_tensor) 
-								for video in context_stream_list]
-
 		# Merge the first and second dimensions of the two streams
 		# the result fisrt dimension accounts for all frames in a batch
 		fovea_stream_batch = tf.reshape(tf.pack(fovea_stream_list),

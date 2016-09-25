@@ -12,7 +12,7 @@ import tensorflow as tf
 
 FLAGS = tf.app.flags.FLAGS
 
-NUM_CLASS = 101 # Without background class
+NUM_CLASS = 103 # With background class as 0
 FRAME_COUNTS = 1  # Number of frames in a video
 BATCH_SIZE = 32
 
@@ -227,6 +227,7 @@ def inference(fovea_batch, context_batch, batch_size):
 				name = scope.name)
 
 	# Return unormalised logits
+	#logits = tf.Print(logits, [tf.argmax(logits, 1)], 'argmax(logits) =', summarize=20, first_n=7)
 	return logits
 
 
@@ -239,8 +240,6 @@ def losses(logits, labels):
 	
 	logits.get_shape().assert_has_rank(2)
 	
-	# TODO, check lables shape and type
-
 	cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
 					logits, labels, name='cross_entropy_per_example')
 	cross_entropy_mean = tf.reduce_mean(
